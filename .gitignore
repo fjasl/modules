@@ -1,0 +1,7 @@
+source_cpp/
+app/build/
+app/node_modules/
+app/wrappers/engine/player/build/
+app/wrappers/engine/lyricer/build/
+.DS_Store
+*.log
