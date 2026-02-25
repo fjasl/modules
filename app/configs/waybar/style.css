@@ -1,0 +1,237 @@
+* {
+    font-family: "JetBrainsMono Nerd Font", FontAwesome, Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+window#waybar {
+    background-color: transparent;
+    color: #cdd6f4;
+}
+
+/* Base style for groups of modules */
+.modules-left,
+.modules-center,
+.modules-right {
+    margin: 5px 10px;
+}
+
+/* 只有确实存在内容的模块容器，我们才给它穿上带有边框的衣服 */
+.modules-right {
+    background-color: #1e1e2e;
+    border: 2px solid #313244;
+    border-radius: 12px;
+    padding: 0 5px;
+}
+
+button {
+    box-shadow: none;
+    border: none;
+    border-radius: 10px;
+}
+
+button:hover {
+    background-color: #313244;
+    text-shadow: none;
+    box-shadow: none;
+}
+
+#workspaces button {
+    padding: 0 8px;
+    color: #cdd6f4;
+    min-width: 25px;
+    margin: 3px 2px;
+}
+
+#workspaces button:hover {
+    background-color: #45475a;
+}
+
+#workspaces button.focused,
+#workspaces button.active {
+    background-color: #89b4fa;
+    color: #1e1e2e;
+    border-radius: 10px;
+}
+
+#workspaces button.urgent {
+    background-color: #f38ba8;
+    color: #1e1e2e;
+}
+
+#mode {
+    background-color: #89b4fa;
+    color: #1e1e2e;
+    border-radius: 10px;
+    padding: 0 10px;
+}
+
+#clock,
+#battery,
+#cpu,
+#memory,
+#disk,
+#temperature,
+#backlight,
+#network,
+#pulseaudio,
+#wireplumber,
+#custom-media,
+#tray,
+#idle_inhibitor,
+#power-profiles-daemon,
+#mpd,
+#mpris,
+#custom-power,
+#keyboard-state,
+#language {
+    padding: 2px 10px;
+    margin: 3px 2px;
+    border-radius: 8px;
+    color: #cdd6f4;
+    background-color: #1e1e2e;
+}
+
+#custom-agplayer_info {
+    padding: 3px 10px;
+    margin: 3px 2px;
+    border-radius: 8px;
+    color: #cdd6f4;
+    background-color: #1e1e2e;
+}
+
+/* Hover effect on clickable modules */
+#cpu:hover,
+#memory:hover,
+#network:hover,
+#pulseaudio:hover,
+#mpris:hover,
+#custom-power:hover {
+    background-color: #313244;
+}
+
+#clock {
+    color: #b4befe;
+    font-weight: bold;
+}
+
+#battery {
+    color: #a6e3a1;
+}
+
+#battery.charging,
+#battery.plugged {
+    color: #f9e2af;
+}
+
+#battery.critical:not(.charging) {
+    background-color: #f38ba8;
+    color: #1e1e2e;
+    animation-name: blink;
+    animation-duration: 0.5s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    animation-direction: alternate;
+}
+
+@keyframes blink {
+    to {
+        background-color: #cdd6f4;
+        color: #1e1e2e;
+    }
+}
+
+#cpu {
+    color: #fab387;
+}
+
+#memory {
+    color: #cba6f7;
+}
+
+#network {
+    color: #94e2d5;
+}
+
+#network.disconnected {
+    color: #f38ba8;
+}
+
+#pulseaudio {
+    color: #89b4fa;
+}
+
+#pulseaudio.muted {
+    color: #585b70;
+}
+
+#temperature {
+    color: #f9e2af;
+}
+
+#temperature.critical {
+    color: #f38ba8;
+}
+
+#tray {
+    background-color: transparent;
+}
+
+#idle_inhibitor {
+    color: #cdd6f4;
+}
+
+#idle_inhibitor.activated {
+    color: #89b4fa;
+}
+
+#custom-power {
+    color: #f38ba8;
+}
+
+#keyboard-state {
+    color: #f5c2e7;
+}
+
+#mpris {
+    color: #cba6f7;
+}
+
+#mpris.paused {
+    color: #a6adc8;
+}
+
+tooltip {
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 8px;
+}
+
+tooltip label {
+    color: #cdd6f4;
+}
+
+/* 弹出菜单样式 */
+menu {
+    background-color: #1e1e2e;
+    border: 2px solid #313244;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+menuitem {
+    color: #cdd6f4;
+    padding: 4px 8px;
+    border-radius: 8px;
+    margin: 2px 4px;
+}
+
+menuitem:hover {
+    background-color: #313244;
+    color: #f38ba8;
+}
+
+menuitem label {
+    font-size: 14px;
+    font-weight: 600;
+}
