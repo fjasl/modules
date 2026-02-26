@@ -76,6 +76,7 @@ class AudioApp {
             case 'previous': this.playPrevious(); break;
             case 'set_mode': this.playlist.setMode(cmd.mode); break;
             case 'add': this.playlist.add(cmd.path).then(() => this.broadcastWaybarUpdate()); break;
+            case 'rescan': this.playlist.manualRescan(); break; // 手动触发重新扫描
             case 'seek':
                 if (cmd.position !== undefined) this.engine.seek(cmd.position);
                 break;

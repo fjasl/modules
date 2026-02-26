@@ -1,15 +1,24 @@
 const fs = require('fs').promises;
 const path = require('path');
 const mediaManager = require('./mediaManager');
+const chokidar = require('chokidar');
+const EventEmitter = require('events');
 
-class PlaylistManager {
+class PlaylistManager extends EventEmitter {
     constructor() {
+        super();
         this.queue = []; // 存储格式: [{ audioPath, lyricPath, coverPath, metadata }]
         this.currentIndex = -1;
         this.mode = 'Shuffle'; // 仅支持: 'Shuffle', 'LoopOne'
         this.musicDir = '/home/yun/music';
         this.history = [];      // 播放历史 (索引列表)
         this.maxHistory = 100;  // 最大历史长度
+
+        // 监控相关
+        this.watcher = null;
+        this.rescanTimeout = null;
+        this.debounceDelay = 500;
+        this.startWatching();
     }
 
     /**
@@ -125,6 +134,68 @@ class PlaylistManager {
         }
         return null;
     }
+
+    // --- 监控与重扫逻辑 ---
+
+    // 启动自动监控
+    startWatching() {
+        if (this.watcher) {
+            console.log('[Playlist] 监控已经在运行中。');
+            return;
+        }
+        // 初始化 chokidar
+        this.watcher = chokidar.watch(this.musicDir, {
+            ignored: /(^|[\/\\])\../, // 忽略隐藏文件 (.git, .DS_Store 等)
+            persistent: true,
+            ignoreInitial: true // 重要：忽略程序刚启动时遍历已有文件触发的 add 事件
+        });
+        // 统一处理增加、删除、修改事件
+        const onChange = (action, filePath) => {
+            console.log(`[Playlist] 自动检测到文件 ${action}: ${filePath}`);
+            this.triggerAutoRescan();
+        };
+        this.watcher
+            .on('add', path => onChange('增加', path))
+            .on('unlink', path => onChange('删除', path))
+            // 注意：如果你不需要在文件内容修改时（如修改ID3标签）重扫，可以把 'change' 注释掉
+            .on('change', path => onChange('修改', path));
+
+        console.log(`[Playlist] 开始监控文件夹: ${this.musicDir}`);
+    }
+
+    // 停止监控
+    stopWatching() {
+        if (this.watcher) {
+            this.watcher.close();
+            this.watcher = null;
+            console.log('[Playlist] 已停止监控。');
+        }
+    }
+
+    // 自动变动时的带防抖扫描
+    triggerAutoRescan() {
+        if (this.rescanTimeout) {
+            clearTimeout(this.rescanTimeout); // 取消上一次的计时
+        }
+
+        // 当文件停止变动 500ms 后，再去执行真正的 rescan
+        this.rescanTimeout = setTimeout(() => {
+            console.log('[Playlist] 自动变动防抖结束... 执行扫描');
+            this.scanDirectory(this.musicDir).then(() => {
+                this.emit('playlist_updated', this.queue);
+            });
+        }, this.debounceDelay);
+    }
+
+    // 面向外部暴露的【手动触发】接口
+    manualRescan() {
+        console.log('[Playlist] 收到手动重新扫描指令。');
+        // 手动触发通常不需要防抖，直接执行
+        this.scanDirectory(this.musicDir).then(() => {
+            this.emit('playlist_updated', this.queue);
+        });
+    }
 }
+
 
 module.exports = PlaylistManager;
