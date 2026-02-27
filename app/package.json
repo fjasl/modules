@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "cmake-js": "^8.0.0",
     "log-update": "^7.1.0",

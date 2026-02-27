@@ -3,6 +3,7 @@ const mediaManager = require('./units/mediaManager.js');
 const MprisManager = require('./units/mprisManager.js');
 const SocketManager = require('./units/socketManager.js');
 const PlaylistManager = require('./units/playlistManager.js');
+const dbManager = require('./units/dbManager.js');
 
 const SOCKET_PATH = '/tmp/agplayer-waybar.sock';
 
@@ -46,8 +47,18 @@ class AudioApp {
             console.log(`📡 [AudioApp] setOnStateChange: state=${state}`);
             this.syncMprisStatus();
             this.broadcastWaybarUpdate();
-            if (state === 3) {
 
+            if (state === 3 && this.pendingSeek > 0) {
+                console.log(`🚀 [AudioApp] mpv 引擎进入状态 3，在此刻执行延迟恢复 Seek 到: ${this.pendingSeek}s`);
+                this.engine.seek(this.pendingSeek);
+
+                // 【核心逻辑】执行完立刻归零清空这个标志，保证以后正常的切歌和暂停绝对不会再触发它
+                this.pendingSeek = 0;
+            }
+            else if (state === 3) {
+                const timePos = this.view.getFloat64(4, true);
+                dbManager.setState('last_played_position', timePos);
+                console.log(`💾 [AudioApp] 已保存播放进度: ${timePos}s`);
             }
             // EOF → 自动切歌（异步，避免重入）
             if (state === 5) {
@@ -64,6 +75,7 @@ class AudioApp {
                 this.broadcastWaybarUpdate();
             }
         });
+        this.pendingSeek = 0;
     }
 
     handleIncomingCommand(cmd) {
@@ -87,17 +99,24 @@ class AudioApp {
 
     async playNext() {
         const track = this.playlist.next();
-        if (track) await this.startTrack(track);
+        // 传入可选参数：true(自动播放)，0(起点为0)
+        if (track) await this.startTrack(track, true, 0);
     }
 
     async playPrevious() {
         const track = this.playlist.previous();
-        if (track) await this.startTrack(track);
+        // 传入可选参数：true(自动播放)，0(起点为0)
+        if (track) await this.startTrack(track, true, 0);
     }
+
 
     async startTrack(resource) {
         console.log(`\n🎵 [AudioApp] 切换至: ${resource.metadata?.title || 'Unknown'}`);
         try {
+            // [新增]：哪怕刚切歌，先记录下文件名，以防刚放就关掉
+            dbManager.setState('last_played_file', resource.audioPath);
+            // dbManager.setState('last_played_position', 0); // 将进度重置为 0
+
             // 更新 MPRIS 元数据
             this.mpris.metadata = {
                 title: resource.metadata?.title,
@@ -107,21 +126,53 @@ class AudioApp {
             };
 
             const lrcPath = resource.audioPath.replace(/\.[^/.]+$/, "") + ".lrc";
-            // [修复] 捕获返回的歌词文档，用于渲染
+            // 获取歌词文档
             this.currentLyricDoc = this.engine.load(resource.audioPath, lrcPath);
             if (this.currentLyricDoc && this.currentLyricDoc.lines) {
                 console.log(`📜 [AudioApp] 歌词加载成功: ${this.currentLyricDoc.lines.length} 行`);
             } else {
                 console.warn("⚠️ [AudioApp] 歌词加载返回为空或无效");
             }
-
             this.engine.play();
 
             this.broadcastWaybarUpdate();
+
         } catch (err) {
             console.error("❌ [AudioApp] 播放失败:", err);
         }
     }
+
+
+    async init() {
+        await this.playlist.scanDirectory();
+
+        // [新增] 尝试恢复之前的播放状态
+        const lastFile = dbManager.getState('last_played_file');
+        const lastPosition = parseFloat(dbManager.getState('last_played_position') || '0');
+
+        let targetTrack = null;
+
+        if (lastFile) {
+            // 尝试在播放列表中找回刚才那一首
+            targetTrack = this.playlist.findAndSetCurrentByPath(lastFile);
+            if (targetTrack) {
+                console.log(`🔄 [AudioApp] 发现历史播放记录: ${lastFile}, 进度: ${lastPosition}s`);
+            }
+        }
+
+        // 如果没有历史记录，或者文件被删了没找到，退回到默认的第一首
+        if (!targetTrack) {
+            targetTrack = this.playlist.getCurrent();
+        }
+
+        if (targetTrack) {
+
+            const isRestore = !!lastFile && targetTrack.audioPath === lastFile;
+
+            await this.startTrack(targetTrack, !isRestore, isRestore ? lastPosition : 0);
+        }
+    }
+
 
     syncMprisStatus() {
         // [修复] 偏移修正
@@ -174,14 +225,39 @@ class AudioApp {
 
     async init() {
         await this.playlist.scanDirectory();
-        const first = this.playlist.getCurrent();
-        if (first) {
-            await this.startTrack(first);
+
+        // [新增] 尝试恢复之前的播放状态
+        const lastFile = dbManager.getState('last_played_file');
+        const lastPosition = parseFloat(dbManager.getState('last_played_position') || '0');
+
+        let targetTrack = null;
+
+        if (lastFile) {
+            // 尝试在播放列表中找回刚才那一首
+            targetTrack = this.playlist.findAndSetCurrentByPath(lastFile);
+            if (targetTrack) {
+                console.log(`🔄 [AudioApp] 发现历史播放记录: ${lastFile}, 进度: ${lastPosition}s`);
+            }
+        }
+
+        // 如果没有历史记录，或者文件被删了没找到，退回到默认的第一首
+        if (!targetTrack) {
+            targetTrack = this.playlist.getCurrent();
+        }
+
+        if (targetTrack) {
+            this.pendingSeek = lastPosition;
+            await this.startTrack(targetTrack);
         }
     }
+
+
 }
 
 const app = new AudioApp();
+
+
+
 
 if (require.main === module) {
     app.init().catch(err => console.error("Initialization failed:", err));

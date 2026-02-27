@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const mediaManager = require('./mediaManager');
 const chokidar = require('chokidar');
+const dbManager = require('./dbManager');
 const EventEmitter = require('events');
 
 class PlaylistManager extends EventEmitter {
@@ -24,27 +25,78 @@ class PlaylistManager extends EventEmitter {
     /**
      * 自动扫描指定目录下的音频文件
      */
+    /**
+  * 增量扫描指定目录下的音频文件
+  */
     async scanDirectory(dir = this.musicDir) {
-        console.log(`🔍 [Playlist] 正在扫描目录: ${dir}`);
+        console.log(`🔍 [Playlist] 开始扫描目录: ${dir}`);
         try {
+            // 1. 从数据库极速加载所有已缓存的歌曲数据
+            const cachedTracks = dbManager.getAllTracks();
+            // 用一个 Set 存储所有已知的物理文件路径，用来做超快对比
+            const knownPaths = new Set(cachedTracks.map(t => t.audioPath));
+
+            // 当前的播放队列先等于缓存的数据
+            this.queue = cachedTracks;
+
+            // 2. 读取物理目录里的所有实际文件
             const files = await fs.readdir(dir);
             const mp3Files = files.filter(f => f.toLowerCase().endsWith('.mp3'));
 
-            const tasks = mp3Files.map(async (file) => {
+            // 3. 找出真正在本地有，但是数据库里没有的“新”文件
+            const newFiles = mp3Files.filter(file => {
                 const fullPath = path.join(dir, file);
-                return await mediaManager.discover(fullPath);
+                return !knownPaths.has(fullPath);
             });
 
-            this.queue = await Promise.all(tasks);
-            if (this.queue.length > 0) {
+            if (newFiles.length > 0) {
+                console.log(`✨ [Playlist] 发现 ${newFiles.length} 首未入库的新歌，正在解析元数据...`);
+
+                // 4. 只对新文件进行耗时的 discover 解析
+                const tasks = newFiles.map(async (file) => {
+                    const fullPath = path.join(dir, file);
+                    const resource = await mediaManager.discover(fullPath);
+
+                    // 将新解析出来的歌曲写进数据库！下次就不会再扫它了
+                    if (resource) {
+                        dbManager.addTrack(resource);
+                    }
+                    return resource;
+                });
+
+                // 等待新歌解析完毕，并追加到现有播放列表中
+                const newlyDiscovered = await Promise.all(tasks);
+                this.queue.push(...newlyDiscovered.filter(r => r !== null));
+            } else {
+                console.log(`⚡ [Playlist] 没有发现新歌，直接使用本地数据库缓存`);
+            }
+
+            if (this.queue.length > 0 && this.currentIndex === -1) {
                 this.currentIndex = 0;
             }
-            console.log(`✅ [Playlist] 扫描完成，共发现 ${this.queue.length} 首歌曲`);
+
+            console.log(`✅ [Playlist] 列表准备就绪，共计 ${this.queue.length} 首歌曲`);
             return this.queue;
+
         } catch (err) {
-            console.error(`❌ [Playlist] 扫描失败:`, err);
+            console.error(`❌ [Playlist] 扫描/读取数据库失败:`, err);
             return [];
         }
+    }
+
+    /**
+ * 根据音频文件路径定位到播放列表中的指定歌曲
+ * @param {string} audioPath 
+ * @returns {Object|null} 如果找到了，返回歌曲资源对象；没找到返回 null
+ */
+    findAndSetCurrentByPath(audioPath) {
+        if (!audioPath) return null;
+        const index = this.queue.findIndex(item => item.audioPath === audioPath);
+        if (index !== -1) {
+            this.currentIndex = index;
+            return this.queue[index];
+        }
+        return null;
     }
 
     getCurrent() {
