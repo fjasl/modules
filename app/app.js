@@ -1,5 +1,4 @@
 const { Engine } = require('./build/Release/ag_backend.node');
-const mediaManager = require('./units/mediaManager.js');
 const MprisManager = require('./units/mprisManager.js');
 const readline = require('readline');
 const net = require('net');
@@ -26,7 +25,7 @@ class AudioApp {
         this.audioMonitor.onAudioDataReady = (audioData) => {
             if (this.spectrumSocket) {
                 // 利用简易离散傅里叶变换提取出供可视化的 20 个频段的柱状体
-                const spectrumData = this.audioMonitor.computeSpectrum(audioData, 20);
+                const spectrumData = this.audioMonitor.computeSpectrum(audioData, 10);
 
                 // 专门给 AGS 读取的纯净数据
                 this.spectrumSocket.broadcast({

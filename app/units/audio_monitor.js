@@ -196,7 +196,7 @@ class AudioMonitor {
      * @param {number} numBins 柱子数量 (默认 20)
      * @returns {Array<number>} 频谱高度数组
      */
-    computeSpectrum(pcmFloatArray, numBins = 20) {
+    computeSpectrum(pcmFloatArray, numBins = 10) {
         const N = pcmFloatArray.length;
         const spectrum = [];
         const sampleRate = 44100;
@@ -204,7 +204,7 @@ class AudioMonitor {
         // 从 30Hz 起到 12000Hz 这个人耳最敏感的大跨度上取我们要的几根柱子
         for (let b = 0; b < numBins; b++) {
             // 生成对数分布的频率刻度
-            const freq = 30 * Math.pow(12000 / 30, b / (numBins - 1));
+            const freq = 30 * Math.pow(8000 / 30, b / (numBins - 1));
             // 该频率对应的 DFT 索引
             const k = Math.floor(freq * N / sampleRate);
 
@@ -226,7 +226,7 @@ class AudioMonitor {
             const magnitude = Math.sqrt(sumR * sumR + sumI * sumI);
 
             // 归一化并放大一点以便肉眼能欣赏到波动
-            let normalized = (magnitude / (N / 2)) * 12.0;
+            let normalized = (magnitude / (N / 2)) * 20.0;
 
             // 简单的平滑滤波或者截断
             if (normalized > 1.0) normalized = 1.0;

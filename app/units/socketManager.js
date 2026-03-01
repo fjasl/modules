@@ -59,7 +59,18 @@ class SocketManager {
         const jsonString = JSON.stringify(data) + '\n';
         for (const socket of this.clients) {
             try {
-                socket.write(jsonString);
+                // 如果发现客户端接收慢，底层缓冲区已满，直接丢弃该帧（丢帧策略）
+                // 否则 Node 会无限把数据积压到 Heap 内存里，导致大规模 GC 而卡死事件循环
+                if (socket.isBlocked) {
+                    continue;
+                }
+                const canAccept = socket.write(jsonString);
+                if (!canAccept) {
+                    socket.isBlocked = true;
+                    socket.once('drain', () => {
+                        socket.isBlocked = false;
+                    });
+                }
             } catch (err) {
                 this.clients.delete(socket);
             }
