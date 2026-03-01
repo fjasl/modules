@@ -61,7 +61,7 @@ public:
   /**
    * @brief 在播放和暂停状态之间切换
    */
-  void togglePause();
+  // void togglePause();
 
   /**
    * @brief 停止当前播放（将触发 State::Stopped）
@@ -109,18 +109,6 @@ public:
    */
   void setOnStateChangedCallback(std::function<void(PlayerState)> cb);
 
-  /**
-   * @brief 【实验功能】音频裸数据回调
-   * 用于提取 PCM 浮点数组，以供前端进行 FFT 运算或音频波柱可视化。
-   */
-  void setOnAudioDataCallback(
-      std::function<void(const float *data, size_t numSamples)> cb);
-
-  /**
-   * @brief 【配置接口】开启真实音频流提权（依赖 Lavfi Filter 向 Pipe 写入）
-   */
-  // void enableAudioExtraction(int sampleRate = 44100, int channels = 2);
-
   // ==========================================
   // --- 数据获取 ---
   // ==========================================
@@ -154,15 +142,9 @@ private:
   // 此处简化，如果只读不加锁可能会有读不一致问题但不会崩溃。为严谨起见，我们暂且返回一份可能稍微不一致的快照。
   std::recursive_mutex m_propertiesMutex;
 
-  // 可视化与抓取参数
-  // bool m_audioExtractionEnabled = false;
-  // int m_extractSampleRate = 44100;
-  // int m_extractChannels = 2;
-
   // 已注册的外部回调函数持有区
   std::function<void(const PlayerProperties &)> m_onPropertiesChanged;
   std::function<void(PlayerState)> m_onStateChanged;
-  std::function<void(const float *, size_t)> m_onAudioData;
 
 private:
   // ==========================================

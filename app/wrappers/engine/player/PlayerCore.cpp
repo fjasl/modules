@@ -1,5 +1,9 @@
 #include "PlayerCore.h"
+#include <fcntl.h>
 #include <iostream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 namespace player {
 
@@ -45,9 +49,12 @@ void PlayerCore::initializeMpv() {
   //  mpv_set_option_string(m_mpv, "keep-open", "no");
   //   设置一些初始选项（如果需要纯音频，可以禁用视频输出等）
   mpv_set_option_string(m_mpv, "vid", "no");
-  // mpv_set_option_string(m_mpv, "msg-level", "all=debug,cplayer=debug");
-  // mpv_set_option_string(m_mpv, "terminal", "yes");
-  //   mpv_set_option_string(m_mpv, "hwdec", "auto");
+
+  // 核心：强制 mpv 使用 pulse音频后端，并输出到我们用 pactl 建立的虚拟管道
+  // 名字必须和 AudioMonitor.js 里约定的一致
+  mpv_set_option_string(m_mpv, "audio-device", "pulse/agplayer_loopback");
+  // 为了防止 mpv 检测不到这个设备时报错，可以开启 fallback
+  mpv_set_option_string(m_mpv, "audio-fallback-to-null", "yes");
 
   int res = mpv_initialize(m_mpv);
   if (res < 0) {
@@ -250,12 +257,6 @@ void PlayerCore::pause() {
   mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &val);
 }
 
-void PlayerCore::togglePause() {
-  std::lock_guard<std::recursive_mutex> lock(m_propertiesMutex);
-  int val = m_properties.isPaused ? 0 : 1;
-  mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &val);
-}
-
 void PlayerCore::stop() {
   const char *cmd[] = {"stop", NULL};
   mpv_command(m_mpv, cmd);
@@ -286,33 +287,6 @@ void PlayerCore::setOnStateChangedCallback(
     std::function<void(PlayerState)> cb) {
   m_onStateChanged = cb;
 }
-
-void PlayerCore::setOnAudioDataCallback(
-    std::function<void(const float *data, size_t numSamples)> cb) {
-  m_onAudioData = cb;
-}
-
-// void PlayerCore::enableAudioExtraction(int sampleRate, int channels) {
-//   m_audioExtractionEnabled = true;
-//   m_extractSampleRate = sampleRate;
-//   m_extractChannels = channels;
-
-//   std::string layout = channels == 2 ? "stereo" : "mono";
-//   std::string pipePath = "/tmp/player_test/audio_pipe";
-//   // 使用 lavfi-complex 来分离音频
-//   // [aid1] 是 mpv 的1号音轨，asplit 复制为两份
-//   // 一路正常进 [ao] 声卡播放
-//   // 另一路 [a] 转为 f32le 格式写入到 named pipe
-//   std::string filter =
-//       "[aid1]asplit[ao][a];[a]aformat=sample_fmts=flt:sample_rates=" +
-//       std::to_string(sampleRate) + ":channel_layouts=" + layout +
-//       ",file=filename=" + pipePath + ":format=f32le";
-
-//   mpv_set_option_string(m_mpv, "lavfi-complex", filter.c_str());
-
-//   std::cout << "[PlayerCore] True Native Audio extraction enabled. Pipe: "
-//             << pipePath << std::endl;
-// }
 
 PlayerProperties PlayerCore::getProperties() const {
   // 因为这里需要返回副本，为了避免和 handlePropertyChange

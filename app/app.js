@@ -1,6 +1,9 @@
 const { Engine } = require('./build/Release/ag_backend.node');
 const mediaManager = require('./units/mediaManager.js');
 const MprisManager = require('./units/mprisManager.js');
+const readline = require('readline');
+const net = require('net');
+const AudioMonitor = require('./units/audio_monitor.js');
 const SocketManager = require('./units/socketManager.js');
 const PlaylistManager = require('./units/playlistManager.js');
 const dbManager = require('./units/dbManager.js');
@@ -15,6 +18,25 @@ class AudioApp {
         // 2. 初始化共享内存视图
         const sharedBuffer = this.engine.getSharedStatusBuffer();
         this.view = new DataView(sharedBuffer.buffer, sharedBuffer.byteOffset, sharedBuffer.byteLength);
+
+        // 2.1 启动音频提取监听服务 (从操作系统的 Pipewire 抓取)
+        this.audioMonitor = new AudioMonitor();
+        // 设置可视化回调
+        this.audioMonitor.onAudioDataReady = (audioData) => {
+            // 简单测试：计算当前这一帧的平均音量振幅 (2048 个 samples)
+            let sum = 0;
+            for (let i = 0; i < audioData.length; i++) {
+                sum += Math.abs(audioData[i]);
+            }
+            const avg = sum / audioData.length;
+
+            // 为了避免日志刷屏，我们只在平均音量较大，或者每隔一定次数打印一下
+            // if (Math.random() < 0.05) { // 大约 5% 的概率打印，防止刷死终端
+            //     console.log(`[Audio 🎵] System Monitor ready | Avg Amplitude: ${avg.toFixed(4)}`);
+            // }
+        };
+        // 开启监听系统混音流
+        this.audioMonitor.start();
 
         // 3. 播放列表协调器
         this.playlist = new PlaylistManager();
