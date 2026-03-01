@@ -8,7 +8,8 @@ const SocketManager = require('./units/socketManager.js');
 const PlaylistManager = require('./units/playlistManager.js');
 const dbManager = require('./units/dbManager.js');
 
-const SOCKET_PATH = '/tmp/agplayer-waybar.sock';
+const SOCKET_PATH_SPECTRUM = '/tmp/agplayer-waybar-spectrum.sock';
+const SOCKET_PATH_LYRICS = '/tmp/agplayer-waybar-lyrics.sock';
 
 class AudioApp {
     constructor() {
@@ -23,17 +24,16 @@ class AudioApp {
         this.audioMonitor = new AudioMonitor();
         // 设置可视化回调
         this.audioMonitor.onAudioDataReady = (audioData) => {
-            // 简单测试：计算当前这一帧的平均音量振幅 (2048 个 samples)
-            let sum = 0;
-            for (let i = 0; i < audioData.length; i++) {
-                sum += Math.abs(audioData[i]);
-            }
-            const avg = sum / audioData.length;
+            if (this.spectrumSocket) {
+                // 利用简易离散傅里叶变换提取出供可视化的 20 个频段的柱状体
+                const spectrumData = this.audioMonitor.computeSpectrum(audioData, 20);
 
-            // 为了避免日志刷屏，我们只在平均音量较大，或者每隔一定次数打印一下
-            // if (Math.random() < 0.05) { // 大约 5% 的概率打印，防止刷死终端
-            //     console.log(`[Audio 🎵] System Monitor ready | Avg Amplitude: ${avg.toFixed(4)}`);
-            // }
+                // 专门给 AGS 读取的纯净数据
+                this.spectrumSocket.broadcast({
+                    type: "spectrum",
+                    data: spectrumData
+                });
+            }
         };
         // 开启监听系统混音流
         this.audioMonitor.start();
@@ -55,8 +55,11 @@ class AudioApp {
         });
 
         // 5. 初始化 Socket 管理器
-        this.socket = new SocketManager(SOCKET_PATH);
-        this.socket.init(
+        this.spectrumSocket = new SocketManager(SOCKET_PATH_SPECTRUM);
+        this.spectrumSocket.init(null, null);
+
+        this.lyricsSocket = new SocketManager(SOCKET_PATH_LYRICS);
+        this.lyricsSocket.init(
             () => this.broadcastWaybarUpdate(),
             (cmd) => this.handleIncomingCommand(cmd)
         );
@@ -235,7 +238,7 @@ class AudioApp {
         // 组装输出：仅显示歌词
         const fullText = currentText;
 
-        this.socket.broadcast({
+        this.lyricsSocket.broadcast({
             text: fullText,
             percentage: songProgress * 100,
             tooltip: `${title} - ${artist}`,

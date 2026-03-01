@@ -414,6 +414,8 @@ function MprisWidget() {
 
     let currentPlayerWidget = null;
     let fallbackLabel = null; // 用于存放没有播放器时的提示语或者直接隐藏
+    let playerSignals = []; // Store signal IDs for cleanup
+    let lastPlayerRef = null; // 存放上一次绑定的 player 引用
 
     const updateMpris = () => {
         const players = mpris.get_players();
@@ -427,6 +429,13 @@ function MprisWidget() {
 
         // 如果之前有播放器控件，先清空盒子
         if (currentPlayerWidget) {
+            // Disconnect old signals from the OLD player reference
+            if (playerSignals.length > 0 && lastPlayerRef) {
+                playerSignals.forEach(sigId => {
+                    try { lastPlayerRef.disconnect(sigId); } catch (e) { }
+                });
+                playerSignals = [];
+            }
             box.remove(currentPlayerWidget);
             currentPlayerWidget.destroy();
             currentPlayerWidget = null;
@@ -460,9 +469,12 @@ function MprisWidget() {
             };
 
             // 监听这个播放器内部的数据变动
-            player.connect("notify::title", syncPlayer);
-            player.connect("notify::artist", syncPlayer);
-            player.connect("notify::playback-status", syncPlayer);
+            lastPlayerRef = player;
+            playerSignals = [
+                player.connect("notify::title", syncPlayer),
+                player.connect("notify::artist", syncPlayer),
+                player.connect("notify::playback-status", syncPlayer)
+            ];
             syncPlayer();
 
             // 点击播放/暂停
@@ -530,7 +542,7 @@ function LyricsWidget() {
     box.add(btn);
 
     // 持续监听 socat UNIX SOCKET 数据获取歌词
-    const socketPath = "/tmp/agplayer-waybar.sock";
+    const socketPath = "/tmp/agplayer-waybar-lyrics.sock";
 
     // 添加 0.5 秒 sleep 避免服务端频繁断开导致的超级轮询消耗 CPU
     const cmd = `bash -c "while true; do if [ -S ${socketPath} ]; then stdbuf -oL socat -u UNIX-CONNECT:${socketPath} STDOUT 2>/dev/null; else sleep 2; fi; done"`;
@@ -550,47 +562,93 @@ function LyricsWidget() {
         const cssProvider = new Gtk.CssProvider();
         btn.get_style_context().add_provider(cssProvider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
+        // 用于节流更新的状态变量
+        let pendingProg = null;
+        let pendingLabel = null;
+        let pendingTooltip = null;
+        let needUpdate = false;
+        // 记录上一次渲染的值，用于去重
+        let lastProg = null;
+        let lastLabel = null;
+        let lastTooltip = null;
+
+        // 10Hz 定时器批量更新 UI（每 100 ms）
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+            if (needUpdate) {
+                const prog = pendingProg !== null ? pendingProg : 0;
+                // 只在值真正变化时才更新 UI，避免重复渲染
+                if (prog !== lastProg || pendingLabel !== lastLabel || pendingTooltip !== lastTooltip) {
+                    const css = `
+                        button.lyrics-item {
+                            background-image: linear-gradient(to right, #f9e2af ${prog}%, transparent ${prog}%);
+                            background-size: 100% 1px;
+                            background-position: bottom;
+                            background-repeat: no-repeat;
+                            border-bottom: none;
+                        }`;
+                    cssProvider.load_from_data(css);
+
+                    if (pendingLabel !== null) {
+                        label.set_label(pendingLabel);
+                    } else {
+                        label.set_label("");
+                    }
+                    if (pendingTooltip) {
+                        btn.set_tooltip_text(pendingTooltip);
+                    }
+
+                    // 根据是否有内容决定显示/隐藏
+                    if (prog > 0 || pendingLabel) {
+                        box.show_all();
+                    } else {
+                        box.hide();
+                    }
+
+                    // 记录本次渲染的状态用于下次去重
+                    lastProg = prog;
+                    lastLabel = pendingLabel;
+                    lastTooltip = pendingTooltip;
+                }
+                needUpdate = false;
+            }
+            return true; // 持续运行
+        });
+
         GLib.io_add_watch(ioChannel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, (source, condition) => {
             if (condition & GLib.IOCondition.HUP) return false;
-
             try {
                 const [status, outLine] = ioChannel.read_line();
                 if (status === GLib.IOStatus.NORMAL && outLine) {
                     const lineStr = outLine.toString().trim();
                     if (lineStr.startsWith("{")) {
                         const data = JSON.parse(lineStr);
+                        if (data && data.type === "spectrum") {
+                            return true; // 忽略频谱包
+                        }
                         if (data && data.text && data.text !== "Offline") {
-                            label.set_label(`󰎆  ${data.text}`);
-                            if (data.tooltip) btn.set_tooltip_text(data.tooltip);
-
-                            // 读取进度 (以 percentage: 0~100 或者 progress: 0~1 为准)
+                            pendingLabel = `󰎆  ${data.text}`;
+                            pendingTooltip = data.tooltip || null;
+                            // 读取进度 (percentage 0-100 或 progress 0-1)
                             let prog = 0;
                             if (typeof data.percentage === 'number') {
                                 prog = data.percentage;
                             } else if (typeof data.progress === 'number') {
                                 prog = data.progress * 100;
                             }
-
-                            // 动态注入底边框 CSS (利用背景渐变充当实线，#f9e2af 为亮黄色)
-                            // 注意：需要在这里覆盖 style.css 里的 background-color 以保持悬浮效果不受干扰，但为了简单我们直接覆盖背景
-                            const css = `
-                                button.lyrics-item {
-                                    background-image: linear-gradient(to right, #f9e2af ${prog}%, transparent ${prog}%);
-                                    background-size: 100% 1px;
-                                    background-position: bottom;
-                                    background-repeat: no-repeat;
-                                    border-bottom: none; /* 移除固定的静态边框，改用背景充当动态边框 */
-                                }
-                            `;
-                            cssProvider.load_from_data(css);
-
-                            box.show_all();
+                            pendingProg = prog;
+                            needUpdate = true;
                         } else {
-                            box.hide(); // Offline 时隐藏歌词
+                            // Offline 或无文本
+                            pendingLabel = "";
+                            pendingProg = 0;
+                            pendingTooltip = null;
+                            needUpdate = true;
                         }
                     } else if (lineStr && lineStr !== "Offline") {
-                        label.set_label(`󰎆  ${lineStr}`);
-                        box.show_all();
+                        pendingLabel = `󰎆  ${lineStr}`;
+                        pendingProg = 0;
+                        pendingTooltip = null;
+                        needUpdate = true;
                     }
                 }
             } catch (e) { }
@@ -626,6 +684,144 @@ function LeftModules() {
 }
 
 // ==========================================
+// 8.7.5 中间栏 (Center Side)
+// ==========================================
+function CenterModules() {
+    const box = new Gtk.Box({
+        orientation: Gtk.Orientation.HORIZONTAL,
+        halign: Gtk.Align.CENTER
+    });
+
+    box.get_style_context().add_class("modules-center");
+
+    // 将频谱图挂载到中间
+
+
+    box.show_all();
+    return box;
+}
+
+// ==========================================
+// 8.8 频谱可视化 (Spectrum)
+// ==========================================
+function SpectrumWidget() {
+    // 创建一个外层容器来挂载和其它按钮一样的背景样式
+    const box = new Gtk.Box({
+        orientation: Gtk.Orientation.HORIZONTAL,
+    });
+    box.get_style_context().add_class("spectrum-box");
+
+    // 使用 Gtk.DrawingArea 绘制频谱
+    const drawingArea = new Gtk.DrawingArea();
+    drawingArea.set_size_request(150, 16); // 宽度150px，高度16px适配按钮内部
+    drawingArea.valign = Gtk.Align.CENTER; // 垂直居中
+    drawingArea.get_style_context().add_class("spectrum-area");
+
+    box.add(drawingArea);
+
+    let targetSpectrum = new Array(20).fill(0);
+    let renderedSpectrum = new Array(20).fill(0);
+
+    // Cairo 绘图回调
+    drawingArea.connect("draw", (widget, cr) => {
+        const width = widget.get_allocated_width();
+        const height = widget.get_allocated_height();
+
+        // 背景透明，不需要清空
+
+        const numBars = targetSpectrum.length;
+        if (numBars === 0) return false;
+
+        const barWidth = width / numBars;
+        const spacing = 1;
+
+        // 设置柱子颜色 (类似亮黄色 #f9e2af)
+        cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 0.9);
+
+        for (let i = 0; i < numBars; i++) {
+            // 平滑插值 (动画过渡)，数字 0.3 是插值速度（缓动系数）
+            renderedSpectrum[i] += (targetSpectrum[i] - renderedSpectrum[i]) * 0.3;
+
+            // 振幅值，防止越界
+            const val = Math.max(0, Math.min(1.0, renderedSpectrum[i]));
+            // 将 0~1 映射到像素高度
+            const barHeight = height * val;
+
+            // 左下角起绘制矩形
+            const x = i * barWidth + spacing / 2;
+            const y = height - barHeight;
+            const w = barWidth - spacing;
+            const h = barHeight;
+
+            // 只有有高度的高度才绘制
+            if (h > 0) {
+                // 圆角或者平角矩形，这里用最简单的平角
+                cr.rectangle(Math.floor(x), Math.floor(y), Math.floor(w), Math.ceil(h));
+                cr.fill();
+            }
+        }
+
+        return false;
+    });
+
+    // 60FPS 动画循环驱动
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+        let needDraw = false;
+        for (let i = 0; i < 20; i++) {
+            // 如果显示的数组与目标数组差异仍然＞0.01，则继续要求重绘
+            if (Math.abs(targetSpectrum[i] - renderedSpectrum[i]) > 0.01) {
+                needDraw = true;
+                break;
+            }
+        }
+        if (needDraw) {
+            drawingArea.queue_draw();
+        }
+        return true;
+    });
+
+    // 同样开启一个后台 socat 监听，但专门过滤 type: "spectrum" 的包
+    const socketPath = "/tmp/agplayer-waybar-spectrum.sock";
+    const cmd = `bash -c "while true; do if [ -S ${socketPath} ]; then stdbuf -oL socat -u UNIX-CONNECT:${socketPath} STDOUT 2>/dev/null; else sleep 2; fi; done"`;
+
+    try {
+        const [, pid, stdin, stdout, stderr] = GLib.spawn_async_with_pipes(
+            null, ["bash", "-c", cmd], null,
+            GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+            null
+        );
+
+        const ioChannel = GLib.IOChannel.unix_new(stdout);
+        GLib.io_add_watch(ioChannel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, (source, condition) => {
+            if (condition & GLib.IOCondition.HUP) return false;
+
+            try {
+                // 默认 GLib IO 有阻塞，不要用 while 循环不断读取，就在 callback 里读一次即可
+                const [status, outLine] = ioChannel.read_line();
+                if (status === GLib.IOStatus.NORMAL && outLine) {
+                    const lineStr = outLine.toString().trim();
+                    if (lineStr.startsWith("{")) {
+                        const data = JSON.parse(lineStr);
+                        if (data && data.type === "spectrum" && Array.isArray(data.data)) {
+                            targetSpectrum = data.data;
+                            // 唤醒动画循环
+                            drawingArea.queue_draw();
+                        }
+                    }
+                }
+            } catch (e) { }
+            return true;
+        });
+
+    } catch (e) {
+        print("Failed to spawn spectrum listener: " + e);
+    }
+
+    box.show_all();
+    return box;
+}
+
+// ==========================================
 // 9. 将所有组件装进一个水平的栏 (Right Side)
 // ==========================================
 function RightModules() {
@@ -643,9 +839,11 @@ function RightModules() {
     const _bat = BatteryWidget();
     const _clk = ClockWidget();
     const _power = PowerWidget();
+    const _spectrum = SpectrumWidget();
+
 
     box.get_style_context().add_class("modules-right");
-
+    box.add(_spectrum);
     box.add(_mpris);
     box.add(_cpu);
     box.add(_mem);
@@ -697,10 +895,13 @@ app.connect("activate", () => {
     });
     barContainer.get_style_context().add_class("bar-container");
 
-    const spacer = new Gtk.Label({ hexpand: true });
+    const leftSpacer = new Gtk.Label({ hexpand: true });
+    const rightSpacer = new Gtk.Label({ hexpand: true });
 
     barContainer.add(LeftModules()); // 引入左侧栏
-    barContainer.add(spacer);
+    barContainer.add(leftSpacer);
+    barContainer.add(CenterModules()); // 引入中间栏
+    barContainer.add(rightSpacer);
     barContainer.add(RightModules());
 
     alignBox.add(barContainer);
