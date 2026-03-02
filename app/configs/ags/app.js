@@ -4,7 +4,9 @@ imports.gi.versions.Gdk = '3.0';
 imports.gi.versions.AstalTray = '0.1';
 imports.gi.versions.AstalMpris = '0.1';
 
-const { Gtk, Astal, GLib, Gdk } = imports.gi;
+const { Gtk, Astal, GLib, Gdk, Gio } = imports.gi;
+const GioUnix = imports.gi.GioUnix;
+const System = imports.system; // 用于调试垃圾回收
 const Battery = imports.gi.AstalBattery;
 const Network = imports.gi.AstalNetwork;
 const Wp = imports.gi.AstalWp;
@@ -556,11 +558,33 @@ function LyricsWidget() {
             null
         );
 
-        const ioChannel = GLib.IOChannel.unix_new(stdout);
+        const ioStream = new GioUnix.InputStream({ fd: stdout, close_fd: true });
+        const dataStream = new Gio.DataInputStream({ base_stream: ioStream, close_base_stream: true });
 
-        // 创建一个动态 CSS 注入器来实现进度条底边框
+        let currentProg = 0; // 当前需要的绘制百分底
+
+        // 【用原生重绘代替 CSS 防止内存泄漏】
+        // 覆盖掉原本 style.css 里的动态 background-image，以及把底边框设为透明或 none
+        // 这样避免因为我们去除了定时器中的 CSS，导致以前的旧 CSS 被错误地挂载
         const cssProvider = new Gtk.CssProvider();
+        cssProvider.load_from_data("button.lyrics-item { border-bottom: none; background-image: none; }");
         btn.get_style_context().add_provider(cssProvider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+        // 直接用 Gtk.Button 的自绘钩子实现底边框进度条。这样不会破坏按钮原有的 box 模型和 padding！
+        btn.connect_after("draw", (widget, cr) => {
+            const width = widget.get_allocated_width();
+            const height = widget.get_allocated_height();
+
+            const progWidth = width * (currentProg / 100);
+
+            if (progWidth > 0 && currentProg > 0) {
+                cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 1.0);
+                cr.rectangle(0, height - 2, progWidth, 2); // 这里用 2px 是因为你的原版 CSS 里用的也是 border-bottom: 2px 
+                cr.fill();
+            }
+
+            return false;
+        });
 
         // 用于节流更新的状态变量
         let pendingProg = null;
@@ -578,15 +602,9 @@ function LyricsWidget() {
                 const prog = pendingProg !== null ? pendingProg : 0;
                 // 只在值真正变化时才更新 UI，避免重复渲染
                 if (prog !== lastProg || pendingLabel !== lastLabel || pendingTooltip !== lastTooltip) {
-                    const css = `
-                        button.lyrics-item {
-                            background-image: linear-gradient(to right, #f9e2af ${prog}%, transparent ${prog}%);
-                            background-size: 100% 1px;
-                            background-position: bottom;
-                            background-repeat: no-repeat;
-                            border-bottom: none;
-                        }`;
-                    cssProvider.load_from_data(css);
+                    // 通知组件重绘进度条，不再拼接 CSS
+                    currentProg = prog;
+                    btn.queue_draw();
 
                     if (pendingLabel !== null) {
                         label.set_label(pendingLabel);
@@ -614,21 +632,16 @@ function LyricsWidget() {
             return true; // 持续运行
         });
 
-        GLib.io_add_watch(ioChannel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, (source, condition) => {
-            if (condition & GLib.IOCondition.HUP) return false;
+        const handleRead = (stream, res) => {
             try {
-                const [status, outLine] = ioChannel.read_line();
-                if (status === GLib.IOStatus.NORMAL && outLine) {
-                    const lineStr = outLine.toString().trim();
+                const [lineStrOrg, length] = stream.read_line_finish_utf8(res);
+                if (lineStrOrg !== null) {
+                    const lineStr = lineStrOrg.trim();
                     if (lineStr.startsWith("{")) {
                         const data = JSON.parse(lineStr);
-                        if (data && data.type === "spectrum") {
-                            return true; // 忽略频谱包
-                        }
-                        if (data && data.text && data.text !== "Offline") {
+                        if (data && data.type !== "spectrum" && data.text && data.text !== "Offline") {
                             pendingLabel = `󰎆  ${data.text}`;
                             pendingTooltip = data.tooltip || null;
-                            // 读取进度 (percentage 0-100 或 progress 0-1)
                             let prog = 0;
                             if (typeof data.percentage === 'number') {
                                 prog = data.percentage;
@@ -637,8 +650,7 @@ function LyricsWidget() {
                             }
                             pendingProg = prog;
                             needUpdate = true;
-                        } else {
-                            // Offline 或无文本
+                        } else if (data && data.text === "Offline") {
                             pendingLabel = "";
                             pendingProg = 0;
                             pendingTooltip = null;
@@ -650,10 +662,15 @@ function LyricsWidget() {
                         pendingTooltip = null;
                         needUpdate = true;
                     }
+
+                    // 继续读取下一行，传递当前具名函数指针，防止产生无限的新闭包导致跨界内存泄漏
+                    stream.read_line_async(GLib.PRIORITY_DEFAULT, null, handleRead);
                 }
-            } catch (e) { }
-            return true;
-        });
+            } catch (e) {
+                // 出错或 EOF 忽略
+            }
+        };
+        dataStream.read_line_async(GLib.PRIORITY_DEFAULT, null, handleRead);
 
     } catch (e) {
         print("Failed to spawn lyrics listener: " + e);
@@ -713,14 +730,14 @@ function SpectrumWidget() {
 
     // 使用 Gtk.DrawingArea 绘制频谱
     const drawingArea = new Gtk.DrawingArea();
-    drawingArea.set_size_request(150, 16); // 宽度150px，高度16px适配按钮内部
+    drawingArea.set_size_request(100, 16); // 宽度150px，高度16px适配按钮内部
     drawingArea.valign = Gtk.Align.CENTER; // 垂直居中
     drawingArea.get_style_context().add_class("spectrum-area");
 
     box.add(drawingArea);
 
-    let targetSpectrum = new Array(20).fill(0);
-    let renderedSpectrum = new Array(20).fill(0);
+    let targetSpectrum = new Array(10).fill(0);
+    let renderedSpectrum = new Array(10).fill(0);
 
     // Cairo 绘图回调
     drawingArea.connect("draw", (widget, cr) => {
@@ -767,7 +784,7 @@ function SpectrumWidget() {
     // 60FPS 动画循环驱动
     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
         let needDraw = false;
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 10; i++) {
             // 如果显示的数组与目标数组差异仍然＞0.01，则继续要求重绘
             if (Math.abs(targetSpectrum[i] - renderedSpectrum[i]) > 0.01) {
                 needDraw = true;
@@ -791,15 +808,15 @@ function SpectrumWidget() {
             null
         );
 
-        const ioChannel = GLib.IOChannel.unix_new(stdout);
-        GLib.io_add_watch(ioChannel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, (source, condition) => {
-            if (condition & GLib.IOCondition.HUP) return false;
+        const ioStream = new GioUnix.InputStream({ fd: stdout, close_fd: true });
+        const dataStream = new Gio.DataInputStream({ base_stream: ioStream, close_base_stream: true });
 
+        // 提取命名的回调函数供后续循环利用，杜绝 60Hz 匿名闭包的巨大跨界内存泄漏
+        const handleRead = (stream, res) => {
             try {
-                // 默认 GLib IO 有阻塞，不要用 while 循环不断读取，就在 callback 里读一次即可
-                const [status, outLine] = ioChannel.read_line();
-                if (status === GLib.IOStatus.NORMAL && outLine) {
-                    const lineStr = outLine.toString().trim();
+                const [lineStrOrg, length] = stream.read_line_finish_utf8(res);
+                if (lineStrOrg !== null) {
+                    const lineStr = lineStrOrg.trim();
                     if (lineStr.startsWith("{")) {
                         const data = JSON.parse(lineStr);
                         if (data && data.type === "spectrum" && Array.isArray(data.data)) {
@@ -808,10 +825,12 @@ function SpectrumWidget() {
                             drawingArea.queue_draw();
                         }
                     }
+                    // 以当前引用的回调发起下一次轮询
+                    stream.read_line_async(GLib.PRIORITY_DEFAULT, null, handleRead);
                 }
             } catch (e) { }
-            return true;
-        });
+        };
+        dataStream.read_line_async(GLib.PRIORITY_DEFAULT, null, handleRead);
 
     } catch (e) {
         print("Failed to spawn spectrum listener: " + e);
@@ -911,5 +930,39 @@ app.connect("activate", () => {
 });
 
 
+// 获取当前 AGS 进程的实际物理驻留内存占用 (MB)
+const getMemoryUsageMB = () => {
+    try {
+        const file = Gio.File.new_for_path('/proc/self/status');
+        const [, contents] = file.load_contents(null);
+        const status = new TextDecoder().decode(contents);
+        const match = status.match(/VmRSS:\s+(\d+)\s+kB/);
+        if (match && match[1]) {
+            return parseInt(match[1], 10) / 1024;
+        }
+    } catch (e) {
+        return 0;
+    }
+    return 0;
+};
+
+// 【系统级垃圾回收探针】用于检测缓慢泄漏还是引擎的懒回收
+GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 120, () => {
+    const memBefore = getMemoryUsageMB();
+    print(`\n======= [GJS System GC] =======`);
+    print(`[${new Date().toLocaleTimeString()}] 触发了 120s 周期性全面垃圾回收!`);
+    System.gc();
+
+    // 给系统一点微小的时间落地回收
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+        const memAfter = getMemoryUsageMB();
+        const freed = memBefore - memAfter;
+        print(`[${new Date().toLocaleTimeString()}] GC 执行完毕。回收前: ${memBefore.toFixed(2)} MB, 回收后: ${memAfter.toFixed(2)} MB => 净释放: ${freed.toFixed(2)} MB`);
+        print(`===============================\n`);
+        return false;
+    });
+
+    return true;
+});
 
 app.run(null);
