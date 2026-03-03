@@ -544,7 +544,7 @@ function LyricsWidget() {
     box.add(btn);
 
     // 持续监听 socat UNIX SOCKET 数据获取歌词
-    const socketPath = "/tmp/agplayer-waybar-lyrics.sock";
+    const socketPath = "/tmp/agplayer-lyrics.sock";
 
     // 添加 0.5 秒 sleep 避免服务端频繁断开导致的超级轮询消耗 CPU
     const cmd = `bash -c "while true; do if [ -S ${socketPath} ]; then stdbuf -oL socat -u UNIX-CONNECT:${socketPath} STDOUT 2>/dev/null; else sleep 2; fi; done"`;
@@ -562,6 +562,7 @@ function LyricsWidget() {
         const dataStream = new Gio.DataInputStream({ base_stream: ioStream, close_base_stream: true });
 
         let currentProg = 0; // 当前需要的绘制百分底
+        let currentLrog = 0; //行百分比
 
         // 【用原生重绘代替 CSS 防止内存泄漏】
         // 覆盖掉原本 style.css 里的动态 background-image，以及把底边框设为透明或 none
@@ -576,23 +577,45 @@ function LyricsWidget() {
             const height = widget.get_allocated_height();
 
             const progWidth = width * (currentProg / 100);
+            const lrogWidth = width * (currentLrog / 100);
 
-            if (progWidth > 0 && currentProg > 0) {
-                cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 1.0);
-                cr.rectangle(0, height - 2, progWidth, 2); // 这里用 2px 是因为你的原版 CSS 里用的也是 border-bottom: 2px 
+            // 画顶部的单句歌词进度 (冰晶蓝)
+            if (lrogWidth > 0 && currentLrog > 0) {
+                cr.setSourceRGBA(137 / 255, 207 / 255, 240 / 255, 1.0);
+                cr.rectangle(0, 0, lrogWidth, 1);
                 cr.fill();
             }
+
+            // 画底部的歌曲总进度 (暖金色)
+            if (progWidth > 0 && currentProg > 0) {
+                cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 1.0);
+                // 注意这里：如果您用高度1，那建议位置也填 height-1，如果您想要2px厚度，那就是 height-2, 宽 2
+                cr.rectangle(0, height - 1, progWidth, 1);
+                cr.fill();
+            }
+
+
+            // if (progWidth > 0 && currentProg > 0 && lrogWidth > 0 && currentLrog > 0) {
+            //     cr.setSourceRGBA(137 / 255, 207 / 255, 240 / 255, 1.0);
+            //     cr.rectangle(0, 0, lrogWidth, 1); // 这里用 2px 是因为你的原版 CSS 里用的也是 border-bottom: 2px 
+            //     cr.fill();
+            //     cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 1.0);
+            //     cr.rectangle(0, height - 1, progWidth, 1); // 这里用 2px 是因为你的原版 CSS 里用的也是 border-bottom: 2px 
+            //     cr.fill();
+            // }
 
             return false;
         });
 
         // 用于节流更新的状态变量
         let pendingProg = null;
+        let pendingLrog = null;
         let pendingLabel = null;
         let pendingTooltip = null;
         let needUpdate = false;
         // 记录上一次渲染的值，用于去重
         let lastProg = null;
+        let lastLrog = null;
         let lastLabel = null;
         let lastTooltip = null;
 
@@ -600,10 +623,12 @@ function LyricsWidget() {
         GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
             if (needUpdate) {
                 const prog = pendingProg !== null ? pendingProg : 0;
+                const lrog = pendingLrog !== null ? pendingLrog : 0;
                 // 只在值真正变化时才更新 UI，避免重复渲染
-                if (prog !== lastProg || pendingLabel !== lastLabel || pendingTooltip !== lastTooltip) {
+                if (prog !== lastProg || lrog !== lastLrog || pendingLabel !== lastLabel || pendingTooltip !== lastTooltip) {
                     // 通知组件重绘进度条，不再拼接 CSS
                     currentProg = prog;
+                    currentLrog = lrog;
                     btn.queue_draw();
 
                     if (pendingLabel !== null) {
@@ -643,12 +668,15 @@ function LyricsWidget() {
                             pendingLabel = `󰎆  ${data.text}`;
                             pendingTooltip = data.tooltip || null;
                             let prog = 0;
+                            let lrog = 0;
                             if (typeof data.percentage === 'number') {
                                 prog = data.percentage;
-                            } else if (typeof data.progress === 'number') {
-                                prog = data.progress * 100;
+                            }
+                            if (typeof data.lineProgress === 'number') {
+                                lrog = data.lineProgress;
                             }
                             pendingProg = prog;
+                            pendingLrog = lrog;
                             needUpdate = true;
                         } else if (data && data.text === "Offline") {
                             pendingLabel = "";
@@ -659,6 +687,7 @@ function LyricsWidget() {
                     } else if (lineStr && lineStr !== "Offline") {
                         pendingLabel = `󰎆  ${lineStr}`;
                         pendingProg = 0;
+                        pendingLrog = 0;
                         pendingTooltip = null;
                         needUpdate = true;
                     }
@@ -798,7 +827,7 @@ function SpectrumWidget() {
     });
 
     // 同样开启一个后台 socat 监听，但专门过滤 type: "spectrum" 的包
-    const socketPath = "/tmp/agplayer-waybar-spectrum.sock";
+    const socketPath = "/tmp/agplayer-spectrum.sock";
     const cmd = `bash -c "while true; do if [ -S ${socketPath} ]; then stdbuf -oL socat -u UNIX-CONNECT:${socketPath} STDOUT 2>/dev/null; else sleep 2; fi; done"`;
 
     try {

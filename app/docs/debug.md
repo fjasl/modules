@@ -7,6 +7,5 @@ pkill -f "socat -u UNIX-CONNECT:/tmp/agplayer-waybar.sock"
 # 3. 重新启动你的面板后台（假设你刚才是在 ~/.config/ags 下运行）
 cd ~/.config/ags && gjs app.js &
 
-
- yun@yun  ~/.config/ags  pkill -f "socat -u UNIX-CONNECT:/tmp/agplayer-waybar-spectrum.sock"
- yun@yun  ~/.config/ags  pkill -f "socat -u UNIX-CONNECT:/tmp/agplayer-waybar-lyrics.sock" 
+pkill -f "socat -u UNIX-CONNECT:/tmp/agplayer-spectrum.sock"
+pkill -f "socat -u UNIX-CONNECT:/tmp/agplayer-lyrics.sock" 

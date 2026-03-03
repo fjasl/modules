@@ -7,8 +7,8 @@ const SocketManager = require('./units/socketManager.js');
 const PlaylistManager = require('./units/playlistManager.js');
 const dbManager = require('./units/dbManager.js');
 
-const SOCKET_PATH_SPECTRUM = '/tmp/agplayer-waybar-spectrum.sock';
-const SOCKET_PATH_LYRICS = '/tmp/agplayer-waybar-lyrics.sock';
+const SOCKET_PATH_SPECTRUM = '/tmp/agplayer-spectrum.sock';
+const SOCKET_PATH_LYRICS = '/tmp/agplayer-lyrics.sock';
 
 class AudioApp {
     constructor() {
@@ -215,6 +215,7 @@ class AudioApp {
         const duration = this.view.getFloat64(12, true);
         const isPaused = this.view.getInt8(28, true) === 1;
         const lineIndex = this.view.getInt32(30, true);
+        const lineProgress = this.view.getFloat64(34, true);
 
         // 获取元数据
         const artist = this.currentLyricDoc?.artist || "Unknown Artist";
@@ -222,14 +223,14 @@ class AudioApp {
 
         // 获取当前歌词
         let currentText = "Enjoy the music";
-        let lineProgress = 0;
+        //let lineProgress = 0;
         if (this.currentLyricDoc && this.currentLyricDoc.lines && lineIndex >= 0 && lineIndex < this.currentLyricDoc.lines.length) {
             const line = this.currentLyricDoc.lines[lineIndex];
             // [修复] 歌词清洗：仅去除换行符 \r 和 \n，保留由于排版需要的空格和缩进
             currentText = line.text.replace(/[\r\n]+/g, '');
             // 如果清洗后为空文本（比如纯换行），使用占位符保持平稳
             if (!currentText) currentText = "…";
-            lineProgress = Math.min(1, Math.max(0, (timePos - line.start) / (line.duration || 1)));
+            //lineProgress = Math.min(1, Math.max(0, (timePos - line.start) / (line.duration || 1)));
         }
 
         const songProgress = duration > 0 ? (timePos / duration) : 0;
@@ -240,6 +241,7 @@ class AudioApp {
         this.lyricsSocket.broadcast({
             text: fullText,
             percentage: songProgress * 100,
+            lineProgress: lineProgress * 100,
             tooltip: `${title} - ${artist}`,
             class: isPaused ? "custom-paused" : "custom-playing"
         });
