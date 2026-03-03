@@ -665,7 +665,7 @@ function LyricsWidget() {
                     if (lineStr.startsWith("{")) {
                         const data = JSON.parse(lineStr);
                         if (data && data.type !== "spectrum" && data.text && data.text !== "Offline") {
-                            pendingLabel = `󰎆  ${data.text}`;
+                            pendingLabel = `${data.text}`;
                             pendingTooltip = data.tooltip || null;
                             let prog = 0;
                             let lrog = 0;
