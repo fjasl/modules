@@ -55,14 +55,26 @@ LyricQueryState LyricQuery::query(const LyricDocument &doc,
     state.currentWordIndex = -1;
     state.wordProgress = 0.0;
 
-    // 同样可以用 upper_bound 获取词，因为通常词数不多（~10），顺序遍历更简单
+    double firstWordStart = state.currentLine.words.front().start;
+    double lastWordEnd = state.currentLine.words.back().start +
+                         state.currentLine.words.back().duration;
+    double wordSpan = lastWordEnd - firstWordStart;
+
+    // 1. 计算绝对行进度：基于字跨度
+    if (wordSpan > 0.0) {
+      state.lineProgress = std::max(
+          0.0, std::min(1.0, (adjustTime - firstWordStart) / wordSpan));
+    } else {
+      state.lineProgress = 1.0;
+    }
+
+    // 2. 查找当前正在唱的字索引及字内进度
     for (size_t i = 0; i < state.currentLine.words.size(); ++i) {
       const auto &word = state.currentLine.words[i];
       double wStart = word.start;
       double wEnd = word.start + word.duration;
 
       if (adjustTime >= wStart && adjustTime < wEnd) {
-        // bingo! 正好在这个词的区间里
         state.currentWordIndex = static_cast<int>(i);
         if (word.duration > 0.0) {
           state.wordProgress = (adjustTime - wStart) / word.duration;
@@ -70,12 +82,7 @@ LyricQueryState LyricQuery::query(const LyricDocument &doc,
           state.wordProgress = 1.0;
         }
         break;
-      } else if (adjustTime < wStart) {
-        // 如果跑到还没开始的块了，说明处于两个字之间的间隙（有的特殊 LRC
-        // 在字间有空格停顿）
-        break;
       }
-      // 否则 (adjustTime >= wEnd)，继续看下一个字...
     }
   }
 
