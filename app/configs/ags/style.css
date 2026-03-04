@@ -307,3 +307,42 @@ button.playlist-refresh-btn {
 button.playlist-refresh-btn:hover {
     background-color: rgba(166, 227, 161, 0.15);
 }
+
+/* ==========================================
+ * 进度条样式 (Progress Slider)
+ * ========================================== */
+scale.control-panel-slider {
+    margin: 8px 0;
+}
+
+/* 轨道背景 (未播放部分) */
+scale.control-panel-slider trough {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-radius: 100px;
+    min-height: 6px;
+    border: none;
+}
+
+/* 已播放部分 (进度条高亮) */
+scale.control-panel-slider highlight {
+    background: linear-gradient(to right, #89b4fa, #cba6f7);
+    /* 蓝到紫的渐变 */
+    border-radius: 100px;
+}
+
+/* 滑动圆点 (Slider Knob) */
+scale.control-panel-slider slider {
+    background-color: #f5e0dc;
+    /* 玫瑰柔红 */
+    border-radius: 50%;
+    min-width: 14px;
+    min-height: 14px;
+    margin: -4px 0;
+    /* 让它稍微变大并居中 */
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+scale.control-panel-slider slider:hover {
+    background-color: #ffffff;
+}

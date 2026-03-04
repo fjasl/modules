@@ -131,7 +131,15 @@ class AudioApp {
                     if (track) this.startTrack(track, true, 0).then(() => this.broadcastPlaylistUpdate());
                 }
                 break;
-            default:
+            case 'seek_percentage':
+                if (cmd.percentage !== undefined) {
+                    const duration = this.view.getFloat64(12, true);
+                    if (duration > 0) {
+                        const target = (cmd.percentage / 100) * duration;
+                        this.engine.seek(target);
+                    }
+                }
+                break;
                 console.warn("⚠️ [Socket] 未知指令:", cmd.command);
         }
     }

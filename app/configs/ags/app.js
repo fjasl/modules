@@ -29,6 +29,8 @@ let controlPanelWindow = null; // 用于控制面板的独立主窗口
 let barWindowInstance = null; // 缓存主顶栏实例，用于坐标转换
 let playlistMenuBoxInstance = null; // 用于缓存实时播放列表实例
 let cachedPlaylistData = null; // 用于缓存最近一次收到的播放列表数据
+let controlPanelSliderInstance = null; // 用于缓存进度条实例
+let isDraggingSlider = false; // 标记用户是否正在拖动进度条
 
 // 根据屏幕宽度自动适应进度条等长度
 // 延迟到组件内部获取，以确保 GTK 已经初始化完毕
@@ -309,6 +311,8 @@ function CpuWidget() {
 
     return btn;
 }
+
+
 
 // ==========================================
 // 7. 电源控制模块 (Power Menu)
@@ -692,6 +696,11 @@ function LyricsWidget() {
                     let lrog = 0;
                     if (typeof data.percentage === 'number') {
                         prog = data.percentage;
+
+                        // 同时更新控制面板的进度条 (如果存在且用户没在拖动)
+                        if (controlPanelSliderInstance && !isDraggingSlider) {
+                            controlPanelSliderInstance.set_value(prog);
+                        }
                     }
                     if (typeof data.lineProgress === 'number') {
                         lrog = data.lineProgress;
@@ -1016,7 +1025,51 @@ function PlaylistMenuBox() {
 }
 
 // ==========================================
-// 10. 控制面板悬浮窗 (Astal.Window 版)
+// 10. 控制面板 - 进度条组件 (Progress Slider)
+// ==========================================
+function ProgressSlider() {
+    const scale = new Gtk.Scale({
+        orientation: Gtk.Orientation.HORIZONTAL,
+        draw_value: false,
+        adjustment: new Gtk.Adjustment({
+            lower: 0,
+            upper: 100,
+            step_increment: 1,
+            page_increment: 10,
+        })
+    });
+    scale.get_style_context().add_class("control-panel-slider");
+
+    // 监听拖动开始
+    scale.connect("button-press-event", () => {
+        isDraggingSlider = true;
+    });
+
+    // 监听拖动结束或点击
+    scale.connect("button-release-event", () => {
+        isDraggingSlider = false;
+        const val = scale.get_value();
+        audioSocket.sendCommand({ command: "seek_percentage", percentage: val });
+    });
+
+    // 滚动滚轮也能调整进度
+    scale.connect("scroll-event", (widget, event) => {
+        // 让默认事件先跑完更新坐标，或者我们手动加减
+        // 这里延迟发送指令，防止过于频繁
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {
+            const val = scale.get_value();
+            audioSocket.sendCommand({ command: "seek_percentage", percentage: val });
+            return false;
+        });
+        return false;
+    });
+
+    controlPanelSliderInstance = scale;
+    return scale;
+}
+
+// ==========================================
+// 11. 控制面板悬浮窗 (Astal.Window 版)
 // ==========================================
 function ControlPanelPopup() {
     const win = new Astal.Window({
@@ -1038,6 +1091,10 @@ function ControlPanelPopup() {
     const titleLabel = new Gtk.Label({ label: "󰝚  控制面板 (Control Panel)" });
     titleLabel.get_style_context().add_class("control-panel-title");
     box.add(titleLabel);
+
+    // 插入进度条模块
+    const progressSlider = ProgressSlider();
+    box.add(progressSlider);
 
     // 插入播放列表模块
     const playlistWidget = PlaylistMenuBox();
