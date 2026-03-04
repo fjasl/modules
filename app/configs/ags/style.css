@@ -234,3 +234,76 @@ menuitem:active {
     /* 居中保留间隙 */
     min-height: 24px;
 }
+
+/* ==========================================
+ * 控制面板 & 播放列表 (Control Panel Window 版)
+ * ========================================== */
+window#control-panel {
+    background-color: transparent;
+    /* 窗口背景透明，靠内部 Box 撑起样式 */
+}
+
+.control-panel-window-box {
+    background-color: rgba(30, 30, 46, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+    margin: 4px;
+    /* 留出一点阴影空间 */
+}
+
+.control-panel-box {
+    min-width: 360px;
+}
+
+.control-panel-title {
+    font-size: 16px;
+    font-weight: 800;
+    color: #cba6f7;
+    margin-bottom: 6px;
+}
+
+/* 播放列表条目按钮 */
+button.playlist-item {
+    padding: 8px 12px;
+    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.03);
+    margin-bottom: 2px;
+    color: #cdd6f4;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+button.playlist-item:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+button.playlist-item-active {
+    background-color: rgba(203, 166, 247, 0.2);
+    /* 浅紫底色 */
+    color: #cba6f7;
+    /* 紫色文字高亮 */
+    border-left: 3px solid #cba6f7;
+    font-weight: 800;
+}
+
+.playlist-header {
+    margin-bottom: 8px;
+    padding: 0 4px;
+}
+
+button.playlist-refresh-btn {
+    padding: 4px 10px;
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    font-size: 11px;
+    color: #a6e3a1;
+    /* 明亮的草绿色 */
+    border: 1px solid rgba(166, 227, 161, 0.2);
+}
+
+button.playlist-refresh-btn:hover {
+    background-color: rgba(166, 227, 161, 0.15);
+}

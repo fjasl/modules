@@ -4,7 +4,7 @@ imports.gi.versions.Gdk = '3.0';
 imports.gi.versions.AstalTray = '0.1';
 imports.gi.versions.AstalMpris = '0.1';
 
-const { Gtk, Astal, GLib, Gdk, Gio } = imports.gi;
+const { Gtk, Astal, GLib, Gdk, Gio, Pango } = imports.gi;
 const GioUnix = imports.gi.GioUnix;
 const System = imports.system; // 用于调试垃圾回收
 const Battery = imports.gi.AstalBattery;
@@ -13,9 +13,27 @@ const Wp = imports.gi.AstalWp;
 const Tray = imports.gi.AstalTray;
 const Mpris = imports.gi.AstalMpris;
 
+// Import our new native socket service
+imports.searchPath.push("/home/yun/.config/ags/services");
+const AudioSocketService = imports.audioSocket.Service;
+const audioSocket = new AudioSocketService("/tmp/agplayer-lyrics.sock");
+
 const app = new Astal.Application({
     instance_name: "my-bar"
 });
+
+// ==========================================
+// 0. 全局变量区
+// ==========================================
+let controlPanelWindow = null; // 用于控制面板的独立主窗口
+let barWindowInstance = null; // 缓存主顶栏实例，用于坐标转换
+let playlistMenuBoxInstance = null; // 用于缓存实时播放列表实例
+let cachedPlaylistData = null; // 用于缓存最近一次收到的播放列表数据
+
+// 根据屏幕宽度自动适应进度条等长度
+// 延迟到组件内部获取，以确保 GTK 已经初始化完毕
+let screenWidth = 1920;
+let screenHeight = 1080;
 
 // 通用执行命令函数
 function execAsync(cmd) {
@@ -423,10 +441,16 @@ function MprisWidget() {
         const players = mpris.get_players();
 
         let player = null;
+        let isAgPlayer = false;
         if (players.length > 0) {
             // 优先查找名为 agplayer 的自定义播放器 (内部 identity 是 'AG Audio')
             const agplayer = players.find(p => p.identity && p.identity.toLowerCase().includes("ag audio"));
-            player = agplayer ? agplayer : players[0];
+            if (agplayer) {
+                player = agplayer;
+                isAgPlayer = true;
+            } else {
+                player = players[0];
+            }
         }
 
         // 如果之前有播放器控件，先清空盒子
@@ -479,29 +503,44 @@ function MprisWidget() {
             ];
             syncPlayer();
 
-            // 点击播放/暂停
-            // btn.connect("clicked", () => {
-            //     player.play_pause();
-            // });
+            // 点击触发逻辑
             btn.connect("button-press-event", (widget, event) => {
                 const [, button] = event.get_button(); // 获取按下的鼠标按键编号
 
-                if (button === 3) {
-                    // 3 代表鼠标右键
-                    player.next();
-                    return true; // 返回 true 阻止事件继续传播
-                }
-                else if (button === 2) {
-                    // 2 代表鼠标中键（滚轮按下），你可以顺便加个中键上一首
-                    player.previous();
-                    return true;
-                }
-                else if (button === 1) {
-                    player.play_pause();
-                    return true;
+                if (isAgPlayer) {
+                    // 对于 agplayer: 
+                    // 只有左键(1)有效，用于弹出/隐藏控制面板悬浮窗
+                    // 禁用右键(3)和中键(2)的默认切歌行为
+                    if (button === 1) {
+                        if (!controlPanelWindow) {
+                            controlPanelWindow = ControlPanelPopup();
+                        }
+
+                        // 动态计算坐标，让控制面板精准对齐到 MPRIS 组件下方
+                        // 只需要计算 X 坐标偏移 (margin_left)
+                        if (barWindowInstance) {
+                            const [success, x, y] = btn.translate_coordinates(barWindowInstance, 0, 0);
+                            if (success) {
+                                // 修正 X 坐标：直接对齐到按钮的左侧
+                                controlPanelWindow.set_margin_left(x);
+                                // Y 坐标：设定到顶栏高度下方，确保垂直贴合
+                                controlPanelWindow.set_margin_top(barWindowInstance.get_allocated_height());
+                            }
+                        }
+
+                        controlPanelWindow.set_visible(!controlPanelWindow.get_visible());
+                        return true;
+                    }
+                } else {
+                    // 对于普通的其他播放器:
+                    // 左键控制播放/暂停，右键/中键可以保留之前的逻辑
+                    if (button === 1) {
+                        player.play_pause();
+                        return true;
+                    }
                 }
 
-                return false; // 左键(1)等其他按键返回 false，放行给默认的 clicked 信号处理
+                return false; // 放行给默认的事件处理
             });
 
             btn.add(label);
@@ -543,167 +582,140 @@ function LyricsWidget() {
     btn.get_style_context().add_class("lyrics-item");
     box.add(btn);
 
-    // 持续监听 socat UNIX SOCKET 数据获取歌词
+    // Continuous UI updates based on the Socket feed
     const socketPath = "/tmp/agplayer-lyrics.sock";
 
-    // 添加 0.5 秒 sleep 避免服务端频繁断开导致的超级轮询消耗 CPU
-    const cmd = `bash -c "while true; do if [ -S ${socketPath} ]; then stdbuf -oL socat -u UNIX-CONNECT:${socketPath} STDOUT 2>/dev/null; else sleep 2; fi; done"`;
+    // Replaced the legacy bash + socat spawn script
+    // with the native audioSocket client handling connection and callbacks
 
-    try {
-        const [, pid, stdin, stdout, stderr] = GLib.spawn_async_with_pipes(
-            null,
-            ["bash", "-c", cmd],
-            null,
-            GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-            null
-        );
+    let currentProg = 0; // The required percentage to draw
+    let currentLrog = 0; // Line percentage
 
-        const ioStream = new GioUnix.InputStream({ fd: stdout, close_fd: true });
-        const dataStream = new Gio.DataInputStream({ base_stream: ioStream, close_base_stream: true });
+    // [Use native redraw instead of CSS to prevent memory leaks]
+    const cssProvider = new Gtk.CssProvider();
+    cssProvider.load_from_data("button.lyrics-item { border-bottom: none; background-image: none; }");
+    btn.get_style_context().add_provider(cssProvider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-        let currentProg = 0; // 当前需要的绘制百分底
-        let currentLrog = 0; //行百分比
+    btn.connect_after("draw", (widget, cr) => {
+        const width = widget.get_allocated_width();
+        const height = widget.get_allocated_height();
 
-        // 【用原生重绘代替 CSS 防止内存泄漏】
-        // 覆盖掉原本 style.css 里的动态 background-image，以及把底边框设为透明或 none
-        // 这样避免因为我们去除了定时器中的 CSS，导致以前的旧 CSS 被错误地挂载
-        const cssProvider = new Gtk.CssProvider();
-        cssProvider.load_from_data("button.lyrics-item { border-bottom: none; background-image: none; }");
-        btn.get_style_context().add_provider(cssProvider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+        const progWidth = width * (currentProg / 100);
+        const lrogWidth = width * (currentLrog / 100);
 
-        // 直接用 Gtk.Button 的自绘钩子实现底边框进度条。这样不会破坏按钮原有的 box 模型和 padding！
-        btn.connect_after("draw", (widget, cr) => {
-            const width = widget.get_allocated_width();
-            const height = widget.get_allocated_height();
+        if (lrogWidth > 0 && currentLrog > 0) {
+            cr.setSourceRGBA(137 / 255, 207 / 255, 240 / 255, 1.0);
+            cr.rectangle(0, 0, lrogWidth, 1);
+            cr.fill();
+        }
 
-            const progWidth = width * (currentProg / 100);
-            const lrogWidth = width * (currentLrog / 100);
+        if (progWidth > 0 && currentProg > 0) {
+            cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 1.0);
+            cr.rectangle(0, height - 1, progWidth, 1);
+            cr.fill();
+        }
 
-            // 画顶部的单句歌词进度 (冰晶蓝)
-            if (lrogWidth > 0 && currentLrog > 0) {
-                cr.setSourceRGBA(137 / 255, 207 / 255, 240 / 255, 1.0);
-                cr.rectangle(0, 0, lrogWidth, 1);
-                cr.fill();
-            }
+        return false;
+    });
 
-            // 画底部的歌曲总进度 (暖金色)
-            if (progWidth > 0 && currentProg > 0) {
-                cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 1.0);
-                // 注意这里：如果您用高度1，那建议位置也填 height-1，如果您想要2px厚度，那就是 height-2, 宽 2
-                cr.rectangle(0, height - 1, progWidth, 1);
-                cr.fill();
-            }
+    // 用于节流更新的状态变量
+    let pendingProg = null;
+    let pendingLrog = null;
+    let pendingLabel = null;
+    let pendingTooltip = null;
+    let needUpdate = false;
+    // 记录上一次渲染的值，用于去重
+    let lastProg = null;
+    let lastLrog = null;
+    let lastLabel = null;
+    let lastTooltip = null;
 
+    // 10Hz 定时器批量更新 UI（每 100 ms）
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+        if (needUpdate) {
+            const prog = pendingProg !== null ? pendingProg : 0;
+            const lrog = pendingLrog !== null ? pendingLrog : 0;
+            // 只在值真正变化时才更新 UI，避免重复渲染
+            if (prog !== lastProg || lrog !== lastLrog || pendingLabel !== lastLabel || pendingTooltip !== lastTooltip) {
+                // 通知组件重绘进度条，不再拼接 CSS
+                currentProg = prog;
+                currentLrog = lrog;
+                btn.queue_draw();
 
-            // if (progWidth > 0 && currentProg > 0 && lrogWidth > 0 && currentLrog > 0) {
-            //     cr.setSourceRGBA(137 / 255, 207 / 255, 240 / 255, 1.0);
-            //     cr.rectangle(0, 0, lrogWidth, 1); // 这里用 2px 是因为你的原版 CSS 里用的也是 border-bottom: 2px 
-            //     cr.fill();
-            //     cr.setSourceRGBA(249 / 255, 226 / 255, 175 / 255, 1.0);
-            //     cr.rectangle(0, height - 1, progWidth, 1); // 这里用 2px 是因为你的原版 CSS 里用的也是 border-bottom: 2px 
-            //     cr.fill();
-            // }
-
-            return false;
-        });
-
-        // 用于节流更新的状态变量
-        let pendingProg = null;
-        let pendingLrog = null;
-        let pendingLabel = null;
-        let pendingTooltip = null;
-        let needUpdate = false;
-        // 记录上一次渲染的值，用于去重
-        let lastProg = null;
-        let lastLrog = null;
-        let lastLabel = null;
-        let lastTooltip = null;
-
-        // 10Hz 定时器批量更新 UI（每 100 ms）
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-            if (needUpdate) {
-                const prog = pendingProg !== null ? pendingProg : 0;
-                const lrog = pendingLrog !== null ? pendingLrog : 0;
-                // 只在值真正变化时才更新 UI，避免重复渲染
-                if (prog !== lastProg || lrog !== lastLrog || pendingLabel !== lastLabel || pendingTooltip !== lastTooltip) {
-                    // 通知组件重绘进度条，不再拼接 CSS
-                    currentProg = prog;
-                    currentLrog = lrog;
-                    btn.queue_draw();
-
-                    if (pendingLabel !== null) {
-                        label.set_label(pendingLabel);
-                    } else {
-                        label.set_label("");
-                    }
-                    if (pendingTooltip) {
-                        btn.set_tooltip_text(pendingTooltip);
-                    }
-
-                    // 根据是否有内容决定显示/隐藏
-                    if (prog > 0 || pendingLabel) {
-                        box.show_all();
-                    } else {
-                        box.hide();
-                    }
-
-                    // 记录本次渲染的状态用于下次去重
-                    lastProg = prog;
-                    lastLabel = pendingLabel;
-                    lastTooltip = pendingTooltip;
+                if (pendingLabel !== null) {
+                    label.set_label(pendingLabel);
+                } else {
+                    label.set_label("");
                 }
-                needUpdate = false;
-            }
-            return true; // 持续运行
-        });
-
-        const handleRead = (stream, res) => {
-            try {
-                const [lineStrOrg, length] = stream.read_line_finish_utf8(res);
-                if (lineStrOrg !== null) {
-                    const lineStr = lineStrOrg.trim();
-                    if (lineStr.startsWith("{")) {
-                        const data = JSON.parse(lineStr);
-                        if (data && data.type !== "spectrum" && data.text && data.text !== "Offline") {
-                            pendingLabel = `${data.text}`;
-                            pendingTooltip = data.tooltip || null;
-                            let prog = 0;
-                            let lrog = 0;
-                            if (typeof data.percentage === 'number') {
-                                prog = data.percentage;
-                            }
-                            if (typeof data.lineProgress === 'number') {
-                                lrog = data.lineProgress;
-                            }
-                            pendingProg = prog;
-                            pendingLrog = lrog;
-                            needUpdate = true;
-                        } else if (data && data.text === "Offline") {
-                            pendingLabel = "";
-                            pendingProg = 0;
-                            pendingTooltip = null;
-                            needUpdate = true;
-                        }
-                    } else if (lineStr && lineStr !== "Offline") {
-                        pendingLabel = `󰎆  ${lineStr}`;
-                        pendingProg = 0;
-                        pendingLrog = 0;
-                        pendingTooltip = null;
-                        needUpdate = true;
-                    }
-
-                    // 继续读取下一行，传递当前具名函数指针，防止产生无限的新闭包导致跨界内存泄漏
-                    stream.read_line_async(GLib.PRIORITY_DEFAULT, null, handleRead);
+                if (pendingTooltip) {
+                    btn.set_tooltip_text(pendingTooltip);
                 }
-            } catch (e) {
-                // 出错或 EOF 忽略
-            }
-        };
-        dataStream.read_line_async(GLib.PRIORITY_DEFAULT, null, handleRead);
 
-    } catch (e) {
-        print("Failed to spawn lyrics listener: " + e);
-    }
+                // 根据是否有内容决定显示/隐藏
+                if (prog > 0 || pendingLabel) {
+                    box.show_all();
+                } else {
+                    box.hide();
+                }
+
+                // 记录本次渲染的状态用于下次去重
+                lastProg = prog;
+                lastLrog = lrog;
+                lastLabel = pendingLabel;
+                lastTooltip = pendingTooltip;
+            }
+            needUpdate = false;
+        }
+        return true; // 持续运行
+    });
+
+    // We assign the onMessageReceived from the native audioSocket
+    audioSocket.onMessageReceived = (lineStrOrg) => {
+        try {
+            const lineStr = lineStrOrg.trim();
+            if (lineStr.startsWith("{")) {
+                const data = JSON.parse(lineStr);
+
+                // 拦截 playlist 类型的包，交给播放列表实例处理
+                if (data && data.type === "playlist") {
+                    cachedPlaylistData = data; // 存入全局缓存
+                    if (playlistMenuBoxInstance && typeof playlistMenuBoxInstance.updatePlaylist === 'function') {
+                        playlistMenuBoxInstance.updatePlaylist(data);
+                    }
+                    return; // 歌词不需要处理这个包
+                }
+
+                if (data && data.type !== "spectrum" && data.text && data.text !== "Offline") {
+                    pendingLabel = `${data.text}`;
+                    pendingTooltip = data.tooltip || null;
+                    let prog = 0;
+                    let lrog = 0;
+                    if (typeof data.percentage === 'number') {
+                        prog = data.percentage;
+                    }
+                    if (typeof data.lineProgress === 'number') {
+                        lrog = data.lineProgress;
+                    }
+                    pendingProg = prog;
+                    pendingLrog = lrog;
+                    needUpdate = true;
+                } else if (data && data.text === "Offline") {
+                    pendingLabel = "";
+                    pendingProg = 0;
+                    pendingTooltip = null;
+                    needUpdate = true;
+                }
+            } else if (lineStr && lineStr !== "Offline") {
+                pendingLabel = `󰎆  ${lineStr}`;
+                pendingProg = 0;
+                pendingLrog = 0;
+                pendingTooltip = null;
+                needUpdate = true;
+            }
+        } catch (e) {
+            // Ignore parse errors or EOF
+        }
+    };
 
     // 初始先隐藏
     box.hide();
@@ -906,38 +918,165 @@ function RightModules() {
 }
 
 // ==========================================
-// 9. 主窗口设置
+// 9. 控制面板 - 实时播放列表组件 (Playlist)
 // ==========================================
+function PlaylistMenuBox() {
+    const mainBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        spacing: 4
+    });
+
+    const header = new Gtk.Box({
+        orientation: Gtk.Orientation.HORIZONTAL,
+    });
+    header.get_style_context().add_class("playlist-header");
+
+    const titleLabel = new Gtk.Label({ label: "󰝚  播放列表", xalign: 0 });
+    titleLabel.get_style_context().add_class("control-panel-title");
+
+    const refreshBtn = new Gtk.Button({ label: "󰑐 刷新" });
+    refreshBtn.get_style_context().add_class("playlist-refresh-btn");
+    refreshBtn.connect("clicked", () => {
+        audioSocket.sendCommand({ command: "rescan" });
+    });
+
+    const spacer = new Gtk.Label({ hexpand: true });
+
+    header.add(titleLabel);
+    header.add(spacer);
+    header.add(refreshBtn);
+    mainBox.add(header);
+
+    const scroll = new Gtk.ScrolledWindow({
+        hscrollbar_policy: Gtk.PolicyType.NEVER,
+        vscrollbar_policy: Gtk.PolicyType.AUTOMATIC,
+        // 限制最大高度，防止列表太长撑破屏幕
+    });
+    scroll.set_size_request(300, 400);
+
+    const listBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        spacing: 2
+    });
+    scroll.add(listBox);
+    mainBox.add(scroll);
+
+    // 暴露一个更新方法供外部 (audioSocket) 调用
+    mainBox.updatePlaylist = (playlistData) => {
+        // 清空现有的子元素
+        const children = listBox.get_children();
+        for (let i = 0; i < children.length; i++) {
+            listBox.remove(children[i]);
+            children[i].destroy();
+        }
+
+        if (!playlistData || !playlistData.tracks || playlistData.tracks.length === 0) {
+            const emptyLabel = new Gtk.Label({ label: "播放列表为空" });
+            listBox.add(emptyLabel);
+        } else {
+            playlistData.tracks.forEach((track) => {
+                const isCurrent = (track.index === playlistData.currentIndex);
+
+                const btn = new Gtk.Button();
+                btn.get_style_context().add_class("playlist-item");
+                if (isCurrent) {
+                    btn.get_style_context().add_class("playlist-item-active");
+                }
+
+                const trackLabel = new Gtk.Label({
+                    label: `${isCurrent ? '▶ ' : ''}${track.title} - ${track.artist}`,
+                    xalign: 0, // 左对齐
+                    ellipsize: Pango.EllipsizeMode.END,
+                });
+                btn.add(trackLabel);
+
+                // 点击时通过 Socket 发送 play_index 指令给后端
+                btn.connect("clicked", () => {
+                    audioSocket.sendCommand({ command: "play_index", index: track.index });
+                    // 点击后自动隐藏控制面板，体验更好
+                    if (controlPanelWindow) controlPanelWindow.set_visible(false);
+                });
+
+                listBox.add(btn);
+            });
+        }
+
+        mainBox.show_all();
+    };
+
+    // 挂载到全局，供 audioSocket 的 onMessageReceived 回调使用
+    playlistMenuBoxInstance = mainBox;
+
+    // 如果当前已经有缓存的歌单数据，立即尝试渲染一次
+    if (cachedPlaylistData) {
+        mainBox.updatePlaylist(cachedPlaylistData);
+    }
+
+    return mainBox;
+}
+
+// ==========================================
+// 10. 控制面板悬浮窗 (Astal.Window 版)
+// ==========================================
+function ControlPanelPopup() {
+    const win = new Astal.Window({
+        name: "control-panel",
+        application: app,
+        gdkmonitor: Gdk.Display.get_default().get_monitor(1), // 务必和 bar 在同一个显示器
+        anchor: Astal.WindowAnchor.TOP | Astal.WindowAnchor.LEFT,
+        visible: false,
+        exclusivity: Astal.Exclusivity.IGNORE, // 不要排挤其他窗口
+        keymode: Astal.Keymode.ON_DEMAND,     // 允许键盘事件（滚动等）
+    });
+
+    const box = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        spacing: 12,
+    });
+    box.get_style_context().add_class("control-panel-window-box");
+
+    const titleLabel = new Gtk.Label({ label: "󰝚  控制面板 (Control Panel)" });
+    titleLabel.get_style_context().add_class("control-panel-title");
+    box.add(titleLabel);
+
+    // 插入播放列表模块
+    const playlistWidget = PlaylistMenuBox();
+    box.add(playlistWidget);
+
+    win.add(box);
+    win.show_all();
+    return win;
+}
+
+// 收集所有需要启动的 Window
 app.connect("activate", () => {
     // 载入 CSS 样式表 
     const provider = new Gtk.CssProvider();
-    provider.load_from_path(GLib.get_current_dir() + "/style.css");
+    provider.load_from_path("/home/yun/.config/ags/style.css");
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(),
         provider,
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
     );
 
+    // 主顶栏的装配
     const window = new Astal.Window({
         application: app,
         anchor: Astal.WindowAnchor.TOP | Astal.WindowAnchor.LEFT | Astal.WindowAnchor.RIGHT,
         name: "bar",
         app_paintable: true,
-
         // --- 下面这行用来选择显示器 ---
         // 比如想只显示在副屏，可以解开这行注释并获取特定的显示器 (例如0是主屏，1是副屏)
         gdkmonitor: Gdk.Display.get_default().get_monitor(1),
 
-        // *** 申请独占空间，也就是您提到的占用顶栏空间不被遮挡 ***
         exclusivity: Astal.Exclusivity.EXCLUSIVE
     });
+    barWindowInstance = window; // 存入全局供坐标计算参考
 
-    // 我们用一个整体的对齐盒子来装内层容器，以实现边距
     const alignBox = new Gtk.Box({
         orientation: Gtk.Orientation.HORIZONTAL
     });
 
-    // 主容器：带背景、药丸形状、内外边距
     const barContainer = new Gtk.Box({
         orientation: Gtk.Orientation.HORIZONTAL,
     });
@@ -958,40 +1097,5 @@ app.connect("activate", () => {
     window.show_all();
 });
 
-
-// 获取当前 AGS 进程的实际物理驻留内存占用 (MB)
-const getMemoryUsageMB = () => {
-    try {
-        const file = Gio.File.new_for_path('/proc/self/status');
-        const [, contents] = file.load_contents(null);
-        const status = new TextDecoder().decode(contents);
-        const match = status.match(/VmRSS:\s+(\d+)\s+kB/);
-        if (match && match[1]) {
-            return parseInt(match[1], 10) / 1024;
-        }
-    } catch (e) {
-        return 0;
-    }
-    return 0;
-};
-
-// 【系统级垃圾回收探针】用于检测缓慢泄漏还是引擎的懒回收
-GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 120, () => {
-    const memBefore = getMemoryUsageMB();
-    print(`\n======= [GJS System GC] =======`);
-    print(`[${new Date().toLocaleTimeString()}] 触发了 120s 周期性全面垃圾回收!`);
-    System.gc();
-
-    // 给系统一点微小的时间落地回收
-    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-        const memAfter = getMemoryUsageMB();
-        const freed = memBefore - memAfter;
-        print(`[${new Date().toLocaleTimeString()}] GC 执行完毕。回收前: ${memBefore.toFixed(2)} MB, 回收后: ${memAfter.toFixed(2)} MB => 净释放: ${freed.toFixed(2)} MB`);
-        print(`===============================\n`);
-        return false;
-    });
-
-    return true;
-});
-
+// Start the application
 app.run(null);

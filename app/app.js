@@ -59,9 +59,17 @@ class AudioApp {
 
         this.lyricsSocket = new SocketManager(SOCKET_PATH_LYRICS);
         this.lyricsSocket.init(
-            () => this.broadcastWaybarUpdate(),
+            (socket) => {
+                this.broadcastWaybarUpdate(); // 最初的歌词状态
+                this.sendPlaylistToSocket(socket); // 给新连上的客户端发送完整播放列表
+            },
             (cmd) => this.handleIncomingCommand(cmd)
         );
+
+        // 监听歌单更新事件
+        this.playlist.on('playlist_updated', () => {
+            this.broadcastPlaylistUpdate();
+        });
 
         // 6. 注册引擎回调
         this.lastBroadcastTime = 0;
@@ -116,6 +124,13 @@ class AudioApp {
             case 'seek':
                 if (cmd.position !== undefined) this.engine.seek(cmd.position);
                 break;
+            case 'play_index':
+                if (cmd.index !== undefined && cmd.index >= 0 && cmd.index < this.playlist.queue.length) {
+                    this.playlist.currentIndex = cmd.index;
+                    const track = this.playlist.getCurrent();
+                    if (track) this.startTrack(track, true, 0).then(() => this.broadcastPlaylistUpdate());
+                }
+                break;
             default:
                 console.warn("⚠️ [Socket] 未知指令:", cmd.command);
         }
@@ -158,12 +173,47 @@ class AudioApp {
                 console.warn("⚠️ [AudioApp] 歌词加载返回为空或无效");
             }
             this.engine.play();
-
             this.broadcastWaybarUpdate();
-
+            this.broadcastPlaylistUpdate(); // Ensure frontend knows which song is playing
         } catch (err) {
             console.error("❌ [AudioApp] 播放失败:", err);
         }
+    }
+
+    // 专门发送完整的歌单数据给指定 Socket 客户端
+    sendPlaylistToSocket(socket) {
+        if (!socket || socket.destroyed) return;
+        const payload = {
+            type: "playlist",
+            currentIndex: this.playlist.currentIndex,
+            tracks: this.playlist.queue.map((t, idx) => ({
+                index: idx,
+                title: t.metadata?.title || 'Unknown',
+                artist: t.metadata?.artist || 'Unknown',
+                audioPath: t.audioPath
+            }))
+        };
+        try {
+            socket.write(JSON.stringify(payload) + '\n');
+        } catch (e) {
+            console.error("❌ [AudioApp] 发送歌单失败:", e);
+        }
+    }
+
+    // 广播歌单数据给所有客户端
+    broadcastPlaylistUpdate() {
+        if (!this.lyricsSocket) return;
+        const payload = {
+            type: "playlist",
+            currentIndex: this.playlist.currentIndex,
+            tracks: this.playlist.queue.map((t, idx) => ({
+                index: idx,
+                title: t.metadata?.title || 'Unknown',
+                artist: t.metadata?.artist || 'Unknown',
+                audioPath: t.audioPath
+            }))
+        };
+        this.lyricsSocket.broadcast(payload);
     }
 
 
