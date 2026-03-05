@@ -1092,6 +1092,38 @@ function ControlPanelPopup() {
     titleLabel.get_style_context().add_class("control-panel-title");
     box.add(titleLabel);
 
+    // ============ 新增开始：控制按钮组 ============
+    const controlsBox = new Gtk.Box({
+        orientation: Gtk.Orientation.HORIZONTAL,
+        spacing: 16,
+        halign: Gtk.Align.CENTER,
+    });
+    // 上一首
+    const preBtn = new Gtk.Button({ label: "󰒮" });
+    preBtn.get_style_context().add_class("control-btn");
+    preBtn.connect("clicked", () => {
+        audioSocket.sendCommand({ command: "previous" });
+    });
+    // 播放/暂停
+    const playPauseBtn = new Gtk.Button({ label: "󰐎" });
+    playPauseBtn.get_style_context().add_class("control-btn");
+    playPauseBtn.connect("clicked", () => {
+        audioSocket.sendCommand({ command: "playpause" });
+    });
+    // 下一首
+    const nextBtn = new Gtk.Button({ label: "󰒭" });
+    nextBtn.get_style_context().add_class("control-btn");
+    nextBtn.connect("clicked", () => {
+        audioSocket.sendCommand({ command: "next" });
+    });
+    controlsBox.add(preBtn);
+    controlsBox.add(playPauseBtn);
+    controlsBox.add(nextBtn);
+
+    box.add(controlsBox);
+    // ============ 新增结束 ============
+
+
     // 插入进度条模块
     const progressSlider = ProgressSlider();
     box.add(progressSlider);
